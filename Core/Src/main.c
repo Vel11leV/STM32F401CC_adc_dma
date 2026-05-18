@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 #include "usb_device.h"
 
 /* Private includes ----------------------------------------------------------*/
@@ -37,29 +38,6 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-#define SIN_DISCRETIZATION 255
-#define WINDOW_SIZE 16
-static uint16_t smaBuffer[WINDOW_SIZE];
-static uint16_t smaIndex;
-static uint16_t smaCount;
-static uint16_t smaSum;
-
-static uint16_t smaFilterAdd(uint16_t newPoint) {
-	if(smaCount == WINDOW_SIZE) {
-		smaSum -= smaBuffer[smaIndex];
-	} else {
-		smaCount ++;
-	}
-	smaBuffer[smaIndex] = newPoint;
-
-	smaSum += newPoint;
-	smaIndex++;
-
-	if(smaIndex >=  WINDOW_SIZE) {
-		smaIndex = 0;
-	}
-	return smaSum/smaCount;
-}
 
 /* USER CODE END PM */
 
@@ -70,37 +48,52 @@ DMA_HandleTypeDef hdma_adc1;
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for myTask02 */
+osThreadId_t myTask02Handle;
+const osThreadAttr_t myTask02_attributes = {
+  .name = "myTask02",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
+/* Definitions for myTask03 */
+osThreadId_t myTask03Handle;
+const osThreadAttr_t myTask03_attributes = {
+  .name = "myTask03",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityLow,
+};
+/* Definitions for myQueue01 */
+osMessageQueueId_t myQueue01Handle;
+const osMessageQueueAttr_t myQueue01_attributes = {
+  .name = "myQueue01"
+};
+/* Definitions for myMutex01 */
+osMutexId_t myMutex01Handle;
+const osMutexAttr_t myMutex01_attributes = {
+  .name = "myMutex01"
+};
 /* USER CODE BEGIN PV */
-static uint16_t sinBuff[255];
-static int i = 0;
+uint8_t dataPrint[100];
+uint16_t dataPrintLen = 0;
+uint16_t ADCStatus = 0;
+volatile uint16_t adc_buffer[5];
+uint8_t serial_send(const uint8_t * data, const uint16_t len);
 
-int setFrequency(uint16_t freq_gz) {
-	return  round (((float)freq_gz * 255) / 50000);
-}
-
-uint8_t sineTable(uint16_t *sineTable,uint16_t len) {
-	for(int i = 0; i< len; i++)
-	{
-		sineTable[i] = 128 + 127 * sin((2 * 3.14 * i )/ len + 1);
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
+	if(hadc->Instance == ADC1) {
+		//ADCStatus = 1;
+		osStatus_t status = osMessageQueuePut(myQueue01Handle, &adc_buffer[0], 0U, 0U);
+		if (status != osOK) {
+		    // Handle error (e.g., queue full)
+		}
 	}
-	return 1;
-}
-
-static int  increment = 1;
-void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
-{
-    if (htim->Instance == TIM3)
-    {
-  	  if (i<SIN_DISCRETIZATION){
-  		  i += increment;
-  	  } else {
-  		  i = 0;
-  	  }
-  	  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, sinBuff[i]);
-
-        //HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_7);
-        HAL_TIM_Base_Start_IT(&htim3);
-    }
 }
 /* USER CODE END PV */
 
@@ -111,6 +104,10 @@ static void MX_ADC1_Init(void);
 static void MX_DMA_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
+void StartDefaultTask(void *argument);
+void StartTask02(void *argument);
+void StartTask03(void *argument);
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -129,7 +126,7 @@ uint8_t serial_send(const uint8_t * data, const uint16_t len){
 }
 uint8_t data[100] = "Hello world!\n";
 uint16_t len;
-volatile uint16_t adcData[2];
+
 /* USER CODE END 0 */
 
 /**
@@ -161,52 +158,97 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
-  MX_USB_DEVICE_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim3);
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
   __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, 124);
 
 
-  sineTable(sinBuff,SIN_DISCRETIZATION);
+
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  osKernelInitialize();
+  /* Create the mutex(es) */
+  /* creation of myMutex01 */
+  myMutex01Handle = osMutexNew(&myMutex01_attributes);
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* Create the queue(s) */
+  /* creation of myQueue01 */
+  myQueue01Handle = osMessageQueueNew (16, sizeof(uint16_t), &myQueue01_attributes);
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of defaultTask */
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  /* creation of myTask02 */
+  myTask02Handle = osThreadNew(StartTask02, NULL, &myTask02_attributes);
+
+  /* creation of myTask03 */
+  myTask03Handle = osThreadNew(StartTask03, NULL, &myTask03_attributes);
+
+  /* USER CODE BEGIN RTOS_THREADS */
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 5);
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   len = strlen(data);
   //uint16_t ledOnTyme = 0;
  // int i = 0;
-  increment = setFrequency(2000);
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 5);
   while (1)
   {
 	  /*
-	  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, sinBuff[i]);
-	  if (i<255){
-		  i ++;
-	  } else {
-		  i = 0;
-	  }
-	  HAL_Delay(1);
-*/
-      for (int i = 200; i < 3000; i += 50)
-      {
-    	  increment = setFrequency(i);
-	      HAL_Delay(300);
-
+      if (ADCStatus) {
+	    sprintf(dataPrint,"ADC 0: %d\n",adc_buffer[0]);
+	  	serial_send(dataPrint, strlen(dataPrint));
+	  	HAL_Delay(100);
+	  	sprintf(dataPrint,"ADC 1: %d\n",adc_buffer[1]);
+	  	serial_send(dataPrint, strlen(dataPrint));
+	  	HAL_Delay(100);
+	  	sprintf(dataPrint,"ADC 2: %d\n",adc_buffer[2]);
+	  	serial_send(dataPrint, strlen(dataPrint));
+	  	HAL_Delay(100);
+	  	sprintf(dataPrint,"ADC 3: %d\n",adc_buffer[3]);
+	    serial_send(dataPrint, strlen(dataPrint));
+	  	HAL_Delay(100);
+	  	sprintf(dataPrint,"ADC 4: %d\n\n",adc_buffer[4]);
+	  	serial_send(dataPrint, strlen(dataPrint));
+	  	HAL_Delay(100);
+	  	ADCStatus = 0;
+	  	HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 5);
       }
-
-	  /*
-	  ledOnTyme += 2;
-	  if (ledOnTyme >= 255) {
-		  ledOnTyme = 0;
-	  }
-	  sprintf(data,"Value 1: %d\n",ledOnTyme);
-	  len = strlen(data);
-	  serial_send(data,len);
-	  */
-
+	 HAL_Delay(1000);
+*/
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -248,7 +290,7 @@ void SystemClock_Config(void)
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV16;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
   if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
@@ -285,7 +327,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.NbrOfConversion = 5;
   hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
@@ -294,7 +336,7 @@ static void MX_ADC1_Init(void)
   }
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
   */
-  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_480CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -303,8 +345,33 @@ static void MX_ADC1_Init(void)
   }
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
   */
-  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Channel = ADC_CHANNEL_1;
   sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_2;
+  sConfig.Rank = 3;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Rank = 4;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Rank = 5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -430,7 +497,7 @@ static void MX_DMA_Init(void)
 
   /* DMA interrupt init */
   /* DMA2_Stream0_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 5, 0);
   HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
 
 }
@@ -464,6 +531,92 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* init code for USB_DEVICE */
+  MX_USB_DEVICE_Init();
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END 5 */
+}
+
+/* USER CODE BEGIN Header_StartTask02 */
+/**
+* @brief Function implementing the myTask02 thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTask02 */
+void StartTask02(void *argument)
+{
+  /* USER CODE BEGIN StartTask02 */
+  /* Infinite loop */
+  for(;;)
+  {
+	uint16_t adcData;
+
+	osStatus_t status = osMessageQueueGet(myQueue01Handle, &adcData, NULL, osWaitForever);
+	if (status == osOK)
+	{
+		sprintf(dataPrint,"ADC 0: %d\n",adcData);
+		serial_send(dataPrint, strlen(dataPrint));
+	}
+    osDelay(1000);
+	HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 5);
+  }
+  /* USER CODE END StartTask02 */
+}
+
+/* USER CODE BEGIN Header_StartTask03 */
+/**
+* @brief Function implementing the myTask03 thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTask03 */
+void StartTask03(void *argument)
+{
+  /* USER CODE BEGIN StartTask03 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END StartTask03 */
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   This function is called  when TIM1 interrupt took place, inside
+  * HAL_TIM_IRQHandler(). It makes a direct call to HAL_IncTick() to increment
+  * a global variable "uwTick" used as application time base.
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  /* USER CODE BEGIN Callback 0 */
+
+  /* USER CODE END Callback 0 */
+  if (htim->Instance == TIM1) {
+    HAL_IncTick();
+  }
+  /* USER CODE BEGIN Callback 1 */
+
+  /* USER CODE END Callback 1 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
